@@ -1,0 +1,239 @@
+name: Seguridad CI/CD
+
+# Se ejecuta en cualquier rama (incluida lab/vulnerable) para demostrar bloqueo y aprobación.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Ajustar a la versión vigente publicada en https://github.com/aquasecurity/trivy/releases (sin la "v").
+  TRIVY_VERSION: "0.76.2"
+
+# ======================================================================================
+# CRITERIOS DE BLOQUEO (el job falla y la compuerta de liberación no se alcanza)
+#   B1. Fallo de pruebas de seguridad (pytest)                 -> job "pruebas"
+#   B2. Hallazgo sobre el umbral definido:
+#         - Semgrep severidad ERROR (regla propia)             -> job "sast"
+#         - Dependencia vulnerable con corrección disponible   -> job "sca"
+#         - Imagen con CVE HIGH/CRITICAL con corrección        -> job "contenedor"
+#         - ZAP con alertas FAIL (cabeceras definidas)         -> job "dast"
+#   B3. Incumplimiento de política de configuración:
+#         - OPA deny sobre deploy/deployment.json              -> job "politica"
+#         - Checkov con checks fallidos (Terraform/Dockerfile) -> job "iac"
+# ADVERTENCIAS (se registran, NO bloquean): Semgrep comunitario, informe completo de Trivy,
+#   alertas ZAP de nivel WARN, vulnerabilidades sin versión corregida.
+# ======================================================================================
+
+jobs:
+  pruebas:
+    name: "Pruebas automatizadas [BLOQUEA]"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: pytest
+        run: python -m pytest --junitxml=reports/pytest.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-pruebas
+          path: reports/
+
+  sast:
+    name: "SAST Semgrep [BLOQUEA con ERROR]"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install semgrep
+      - name: Pruebas de la regla propia (casos ruleid/ok)
+        run: semgrep --test --metrics=off semgrep/rules
+      - name: Semgrep reglas propias [BLOQUEA]
+        run: |
+          mkdir -p reports
+          semgrep scan --config semgrep/rules --metrics=off --severity ERROR --error \
+            --json-output=reports/semgrep-propias.json app/
+      - name: Semgrep reglas comunitarias [SOLO ADVERTENCIA]
+        continue-on-error: true
+        run: |
+          semgrep scan --config p/python --metrics=off \
+            --json-output=reports/semgrep-comunitarias.json app/ \
+            || echo "::warning::ADVERTENCIA: Semgrep comunitario reportó hallazgos o no pudo ejecutarse; no bloquea."
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-semgrep
+          path: reports/
+
+  sca:
+    name: "SCA pip-audit [BLOQUEA con corrección disponible]"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install pip-audit
+      - name: pip-audit (genera el reporte; la decisión la toma la puerta)
+        run: |
+          mkdir -p reports
+          pip-audit -r requirements.txt -f json -o reports/pip-audit.json || true
+      - name: Puerta de SCA (política de umbral)
+        run: python scripts/sca_gate.py reports/pip-audit.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-sca
+          path: reports/
+
+  sbom:
+    name: "SBOM CycloneDX [valida el esquema]"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Generar y validar SBOM de dependencias de ejecución
+        run: |
+          mkdir -p reports
+          python -m venv .venv-sbom
+          .venv-sbom/bin/pip install -r requirements.txt
+          pip install cyclonedx-bom
+          cyclonedx-py environment .venv-sbom/bin/python --sv 1.6 --of JSON --mc-type application \
+            --validate -o reports/sbom.cdx.json
+          python scripts/validate_sbom.py reports/sbom.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: reports/sbom.cdx.json
+
+  politica:
+    name: "Política OPA [BLOQUEA]"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+      - name: Pruebas de la política (entradas permitida y denegada)
+        run: opa test policy/ -v
+      - name: Evaluar el descriptor de despliegue [BLOQUEA si hay deny]
+        run: |
+          # --fail-defined => código de salida distinto de 0 si el conjunto deny contiene mensajes.
+          opa eval --fail-defined --format pretty \
+            --input deploy/deployment.json --data policy/ "data.apisegura.deploy.deny[_]"
+
+  iac:
+    name: "IaC y Dockerfile Checkov [BLOQUEA]"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install checkov
+      - name: Checkov Terraform (infra/) y Dockerfile
+        run: |
+          mkdir -p reports
+          checkov -d infra --framework terraform --compact --output cli --output json \
+            --output-file-path console,reports/checkov-terraform.json
+          checkov -f Dockerfile --framework dockerfile --compact --output cli --output json \
+            --output-file-path console,reports/checkov-dockerfile.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-checkov
+          path: reports/
+
+  contenedor:
+    name: "Imagen Docker y Trivy [BLOQUEA HIGH/CRITICAL corregibles]"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir imagen
+        run: docker build -t api-segura:ci .
+      - name: Trivy informe completo [SOLO ADVERTENCIA]
+        run: |
+          mkdir -p reports
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/reports:/reports" \
+            ghcr.io/aquasecurity/trivy:${TRIVY_VERSION} image --format table \
+            --output /reports/trivy-completo.txt --exit-code 0 api-segura:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/reports:/reports" \
+            ghcr.io/aquasecurity/trivy:${TRIVY_VERSION} image --format json \
+            --output /reports/trivy.json --exit-code 0 api-segura:ci
+          echo "::warning::ADVERTENCIA: revisar reports/trivy-completo.txt (incluye severidades bajas y sin corrección)."
+      - name: Trivy puerta HIGH/CRITICAL con corrección [BLOQUEA]
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            ghcr.io/aquasecurity/trivy:${TRIVY_VERSION} image \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 api-segura:ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-trivy
+          path: reports/
+
+  dast:
+    name: "DAST ZAP Baseline [BLOQUEA con FAIL]"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -r requirements.txt
+      - name: Iniciar la API de laboratorio (solo en el runner, sin exposición externa)
+        run: |
+          mkdir -p reports
+          export JWT_SECRET="$(openssl rand -hex 32)"
+          export DB_PATH="$RUNNER_TEMP/dast.db"
+          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-server-header \
+            > reports/uvicorn.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/health && break; sleep 1; done
+      - name: ZAP Baseline contra el laboratorio autorizado
+        run: |
+          mkdir -p zap-out && cp .zap/rules.tsv zap-out/rules.tsv && chmod -R 777 zap-out
+          set +e
+          docker run --rm --network host -v "$PWD/zap-out:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://127.0.0.1:8000/openapi.json -f openapi -c rules.tsv \
+            -r zap-report.html -J zap-report.json -w zap-report.md
+          code=$?
+          set -e
+          echo "Código de salida de ZAP: $code"
+          if [ "$code" -eq 1 ]; then
+            echo "::error::BLOQUEO: ZAP reportó alertas de nivel FAIL"; exit 1
+          elif [ "$code" -eq 2 ]; then
+            echo "::warning::ADVERTENCIA: ZAP reportó alertas de nivel WARN (no bloquean)"
+          elif [ "$code" -ne 0 ]; then
+            echo "::error::ZAP no se ejecutó correctamente (código $code)"; exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-zap
+          path: |
+            zap-out/zap-report.*
+            reports/uvicorn.log
+
+  compuerta-liberacion:
+    name: "Compuerta de liberación"
+    needs: [pruebas, sast, sca, sbom, politica, iac, contenedor, dast]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "Todas las puertas de bloqueo fueron aprobadas."
+          echo "Revisión evaluada: ${{ github.sha }}"
+          echo "### Compuerta de liberación: APROBADA para ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"

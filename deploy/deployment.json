@@ -1,0 +1,15 @@
+{
+  "service": "api-segura",
+  "container": {
+    "image": "api-segura:ci",
+    "user": "appuser"
+  },
+  "app": {
+    "debug": false,
+    "jwt_secret_source": "env",
+    "jwt_ttl_minutes": 15
+  },
+  "network": {
+    "allowed_origins": []
+  }
+}

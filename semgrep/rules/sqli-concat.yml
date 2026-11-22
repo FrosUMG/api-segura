@@ -1,0 +1,40 @@
+rules:
+  - id: apisegura-sql-dinamico-en-execute
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Consulta SQL construida con datos dinámicos (f-string, concatenación, str.format o %)
+      y pasada a execute(). Usar consultas parametrizadas:
+      conn.execute("... WHERE campo = ?", (valor,)).
+    metadata:
+      cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+      category: security
+      confidence: HIGH
+      project: api-segura
+    pattern-either:
+      # Construcción directa dentro de la llamada
+      - pattern: $DB.execute(f"...{$X}...", ...)
+      - pattern: $DB.execute("...".format(...), ...)
+      - pattern: $DB.execute("..." % $X, ...)
+      - patterns:
+          - pattern: $DB.execute(<... "..." + $X ...>, ...)
+          - metavariable-pattern:
+              metavariable: $X
+              patterns:
+                - pattern-not: '"..."'
+      # Construcción previa en una variable que luego se ejecuta
+      - patterns:
+          - pattern: $DB.execute($Q, ...)
+          - pattern-either:
+              - pattern-inside: |
+                  $Q = f"...{$X}..."
+                  ...
+              - pattern-inside: |
+                  $Q = "...".format(...)
+                  ...
+              - pattern-inside: |
+                  $Q = "..." % $X
+                  ...
+              - pattern-inside: |
+                  $Q = <... "..." + $X ...>
+                  ...

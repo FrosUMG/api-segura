@@ -1,0 +1,17 @@
+.git
+.github
+.venv*
+__pycache__
+*.pyc
+tests
+reports
+evidence
+lab
+docs
+infra
+semgrep
+policy
+deploy
+scripts
+*.db
+.env

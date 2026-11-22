@@ -1,0 +1,4 @@
+10020	FAIL	(Anti-clickjacking Header)
+10021	FAIL	(X-Content-Type-Options Header Missing)
+10038	FAIL	(Content Security Policy (CSP) Header Not Set)
+10037	FAIL	(Server Leaks Information via "X-Powered-By" HTTP Response Header Field(s))

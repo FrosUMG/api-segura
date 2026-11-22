@@ -1,0 +1,16 @@
+{
+  "_AVISO": "CONFIGURACION INSEGURA DE LABORATORIO: entrada que la politica OPA debe DENEGAR. No usar.",
+  "service": "api-segura",
+  "container": {
+    "image": "api-segura:ci",
+    "user": "root"
+  },
+  "app": {
+    "debug": true,
+    "jwt_secret_source": "hardcoded",
+    "jwt_ttl_minutes": 1440
+  },
+  "network": {
+    "allowed_origins": ["*"]
+  }
+}
