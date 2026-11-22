@@ -1,5 +1,6 @@
 # Ejecuta los controles locales y guarda las salidas en evidence\local\
-# Uso (desde la raíz del proyecto): .\scripts\run_checks.ps1
+# Uso (desde la raíz del proyecto): powershell -ExecutionPolicy Bypass -File .\scripts\run_checks.ps1
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $ErrorActionPreference = "Continue"
 $out = "evidence\local"
 New-Item -ItemType Directory -Force $out | Out-Null
@@ -25,17 +26,17 @@ Step "pip-audit"
 & .\.venv-tools\Scripts\python.exe scripts\sca_gate.py "$out\pip-audit.json" 2>&1 | Tee-Object "$out\sca-gate.txt"
 
 Step "SBOM CycloneDX"
-if (-not (Test-Path .venv-sbom)) { python -m venv .venv-sbom }
+if (-not (Test-Path .venv-sbom)) { py -3.12 -m venv .venv-sbom }
 & .\.venv-sbom\Scripts\python.exe -m pip install -q -r requirements.txt
 & .\.venv-tools\Scripts\cyclonedx-py.exe environment .venv-sbom\Scripts\python.exe --sv 1.6 --of JSON --mc-type application --validate -o "$out\sbom.cdx.json"
 & .\.venv-tools\Scripts\python.exe scripts\validate_sbom.py "$out\sbom.cdx.json" 2>&1 | Tee-Object "$out\sbom-validacion.txt"
 
 Step "checkov: infraestructura insegura (se espera FALLO)"
-& .\.venv-checkov\Scripts\checkov.exe -d lab\infra-insegura --framework terraform --compact 2>&1 | Tee-Object "$out\checkov-insegura.txt"
+& .\.venv-checkov\Scripts\python.exe -m checkov.main -d lab\infra-insegura --framework terraform --compact 2>&1 | Tee-Object "$out\checkov-insegura.txt"
 Step "checkov: infraestructura corregida (se espera APROBADO)"
-& .\.venv-checkov\Scripts\checkov.exe -d infra --framework terraform --compact 2>&1 | Tee-Object "$out\checkov-corregida.txt"
+& .\.venv-checkov\Scripts\python.exe -m checkov.main -d infra --framework terraform --compact 2>&1 | Tee-Object "$out\checkov-corregida.txt"
 Step "checkov: Dockerfile"
-& .\.venv-checkov\Scripts\checkov.exe -f Dockerfile --framework dockerfile --compact 2>&1 | Tee-Object "$out\checkov-dockerfile.txt"
+& .\.venv-checkov\Scripts\python.exe -m checkov.main -f Dockerfile --framework dockerfile --compact 2>&1 | Tee-Object "$out\checkov-dockerfile.txt"
 
 if (Get-Command opa -ErrorAction SilentlyContinue) {
     Step "OPA: pruebas de la política"
