@@ -10,6 +10,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /srv
 
+# Remediación de CVE-2026-85091 (zlib1g, HIGH) detectada por Trivy en la imagen base: se actualiza únicamente
+# ese paquete a la versión corregida del repositorio de seguridad de Debian y se eliminan las listas de apt.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
 # Solo dependencias de ejecución (sin pytest/httpx): componentes estrictamente necesarios.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
