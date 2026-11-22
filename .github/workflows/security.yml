@@ -208,7 +208,7 @@ jobs:
           mkdir -p zap-out && cp .zap/rules.tsv zap-out/rules.tsv && chmod -R 777 zap-out
           set +e
           docker run --rm --network host -v "$PWD/zap-out:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py -t http://127.0.0.1:8000/openapi.json -f openapi -c rules.tsv \
+            zap-baseline.py -t http://127.0.0.1:8000 -c rules.tsv \
             -r zap-report.html -J zap-report.json -w zap-report.md
           code=$?
           set -e
