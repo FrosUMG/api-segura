@@ -1,4 +1,4 @@
-"""Recursos de usuario (documentos). *** VERSIÓN VULNERABLE DE LABORATORIO: NO DESPLEGAR ***.
+"""Recursos de usuario (documentos). VERSIÓN CORREGIDA.
 
 Los defectos del laboratorio (BOLA/IDOR en get_document e inyección SQL en search_documents)
 se reintroducen únicamente en la rama aislada `lab/vulnerable` mediante lab/vulnerable.patch.
@@ -50,9 +50,12 @@ def search_documents(
     user: dict = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    tracing.event("db.query", operation="search", parametrized=False, owner_id=user["id"])
-    sql = f"SELECT id, owner_id, title, content FROM documents WHERE owner_id = {user['id']} AND title LIKE '%{q}%' ORDER BY id"
-    rows = conn.execute(sql).fetchall()
+    pattern = "%" + _escape_like(q) + "%"
+    tracing.event("db.query", operation="search", parametrized=True, owner_id=user["id"])
+    rows = conn.execute(
+        "SELECT id, owner_id, title, content FROM documents WHERE owner_id = ? AND title LIKE ? ESCAPE '\\' ORDER BY id",
+        (user["id"], pattern),
+    ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -67,5 +70,11 @@ def get_document(
         tracing.event("db.query", operation="get_document", doc_id=doc_id, found=False)
         raise HTTPException(status_code=404, detail="Documento no encontrado")
 
-    # (sin verificación de propietario)
+    # Autorización a nivel de objeto: solo el propietario accede al recurso.
+    if row["owner_id"] != user["id"]:
+        tracing.event("authz.owner_check", doc_id=doc_id, owner_id=row["owner_id"], user_id=user["id"], result="deny")
+        # 404 (y no 403) para no confirmar la existencia de recursos ajenos.
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+
+    tracing.event("authz.owner_check", doc_id=doc_id, owner_id=row["owner_id"], user_id=user["id"], result="allow")
     return dict(row)
